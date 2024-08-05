@@ -1,0 +1,144 @@
+terraform { 
+  required_providers {
+    harness = {
+      source = "harness/harness"
+    }
+  }
+}
+
+variable harness_token {
+  type = string
+  sensitive = true
+}
+
+provider "harness" {
+  endpoint   = "https://app.harness.io/gateway"
+  account_id = "${account_id}"
+  platform_api_key = var.harness_token
+}
+%{~ if terraform_cloud_migration == true }
+  variable terraform_cloud_token {
+    type = string
+    sensitive = true
+  }
+
+  resource "harness_platform_secret_text" "terraform_cloud_token" {
+    identifier  = "terraform_cloud_token"
+    name        = "terraform_cloud_token"
+    org_id      = "${org}"
+    project_id  = "${project}"
+
+    secret_manager_identifier = "harnessSecretManager"
+    value_type                = "Inline"
+    value                     = var.terraform_cloud_token
+  }
+%{~ endif }
+%{~ for workspace in workspaces }
+  resource "harness_platform_workspace" "${workspace.identifier}" {
+    identifier              = "${workspace.identifier}"
+    org_id                  = "${org}"
+    project_id              = "${project}"
+    %{~ if terraform_cloud_migration == true }
+      description           = "${workspace.description}"
+    %{~ endif }
+    repository              = "${workspace.repository}"
+    repository_branch       = "${workspace.repository_branch}"
+    #repository_commit      = "${workspace.repository_commit}"
+    repository_path         = "${workspace.repository_path}"
+    cost_estimation_enabled = ${default_cost_estimation_enabled}
+    name                    = "%{ if workspace.name != "" }${workspace.name}%{ else }${workspace.identifier}%{~ endif }"
+    provisioner_type        = "%{ if workspace.provisioner_type != "" }${workspace.provisioner_type}%{ else }${default_provisioner_type}%{~ endif }"
+    provisioner_version     = "%{ if workspace.provisioner_version != "" }${workspace.provisioner_version}%{ else }${default_provisioner_version}%{~ endif }"
+    provider_connector      = "%{ if workspace.provider_connector != "" }${workspace.provider_connector}%{ else }${default_provider_connector}%{~ endif }"
+    repository_connector    = "%{ if workspace.repository_connector != "" }${workspace.repository_connector}%{ else }${default_repository_connector}%{~ endif }"
+   %{~ if workspace.terraform_variables != null }
+      %{~ for terraform_variable in workspace.terraform_variables }
+        terraform_variable {
+          key = "${terraform_variable.key}"
+          value = "${terraform_variable.value}"
+          value_type = "${terraform_variable.value_type}"
+        }
+      %{~ endfor }
+    %{~ endif }
+   %{~ if workspace.environment_variables != null }
+    %{~ for environment_variable in workspace.environment_variables }
+      environment_variable {
+        key = "${environment_variable.key}"
+        value = "${environment_variable.value}"
+        value_type = "${environment_variable.value_type}"
+      }
+    %{~ endfor } 
+    %{~ if terraform_cloud_migration == true }
+      environment_variable {
+        key = "${terraform_cloud_token_key_name}"
+        value = "terraform_cloud_api_key"
+        value_type = "secret"
+      }
+    %{~ endif }
+   %{~ endif }
+  }
+  %{~ if terraform_cloud_migrate_state == true }
+    resource "null_resource" "import_state_${workspace.name}" {
+      provisioner "local-exec" {
+        command     = "terraform init && terraform state push ${workspace.name}.tfstate" 
+        working_dir = "$${path.module}/state/${workspace.name}"
+        environment = {
+          "TF_HTTP_PASSWORD" = var.harness_token
+          "TF_HTTP_USERNAME" = "harness"
+          "TF_HTTP_ADDRESS" = "https://app.harness.io/gateway/iacm/api/orgs/${org}/projects/${project}/workspaces/${workspace.identifier}/terraform-backend?accountIdentifier=${account_id}"
+          "TF_HTTP_LOCK_ADDRESS" = "https://app.harness.io/gateway/iacm/api/orgs/${org}/projects/${project}/workspaces/${workspace.identifier}/terraform-backend/lock?accountIdentifier=${account_id}"
+          "TF_HTTP_LOCK_METHOD" = "POST"
+          "TF_HTTP_UNLOCK_ADDRESS" = "https://app.harness.io/gateway/iacm/api/orgs/${org}/projects/${project}/workspaces/${workspace.identifier}/terraform-backend/lock?accountIdentifier=${account_id}"
+          "TF_HTTP_UNLOCK_METHOD" = "DELETE"
+        }
+      }
+    depends_on = [harness_platform_workspace.${workspace.identifier}]
+    }
+  %{~ endif }
+%{~ endfor }
+
+
+resource "harness_platform_pipeline" "migration_pipeline" {
+  identifier = "migration_pipeline"
+  org_id     = "${org}"
+  project_id = "${project}"
+  name       = "migrate state"
+  yaml = <<-EOT
+      pipeline:
+        name: migrate state
+        identifier: migration_pipeline
+        projectIdentifier: ${project}
+        orgIdentifier: ${org}
+        stages:
+          - stage:
+              name: iacm state migration
+              identifier: iacm_state_migration
+              description: "migrate state"
+              type: IACM
+              spec:
+                platform:
+                  os: Linux
+                  arch: Amd64
+                runtime:
+                  type: Cloud
+                  spec: {}
+                workspace: <+input>
+                execution:
+                  steps:
+                    - step:
+                        type: IACMTerraformPlugin
+                        name: init
+                        identifier: init
+                        timeout: 10m
+                        spec:
+                          command: init
+                    - step:
+                        type: IACMTerraformPlugin
+                        name: migrate state
+                        identifier: migrate_state
+                        spec:
+                          command: migrate-state
+                        timeout: 10m
+              tags: {}
+    EOT
+  }
