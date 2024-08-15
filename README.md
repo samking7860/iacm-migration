@@ -68,7 +68,7 @@ workspaces = [
 6. Run ```terraform apply``` to create your new harness resources
 
 ### Migrating from Terraform Cloud
-When migrating from Terraform Cloud the tool will fetch all of the workspaces inside the provided ```terraform_cloud_organization``` and create a corresponding Harness workspace.
+When migrating from Terraform Cloud the tool will fetch all of the workspaces inside the provided ```terraform_cloud_project``` and create a corresponding Harness workspace.
 
 #### Variables
 The tool will fetch the variables for each Terraform Cloud workspace and create environment or Terraform variables inside the corresponding Harness workspace. Any sensitive Terraform Cloud variable will be set as type secret in the Harness workspace. Any sensitive variable in Terraform Cloud will need to be recreated manually as a Harness secret and this secret identifier can then be used to update any Harness workspace variable where the secret should be used. **Migration of Terraform Cloud variable sets is not currently supported**
